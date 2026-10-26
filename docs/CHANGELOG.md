@@ -16,6 +16,10 @@
 > 完整逐提交历史见 GitHub Commits / Releases；升级前置条件见 [`UPGRADING.md`](./UPGRADING.md)。
 > `test/verify-scene-live.mjs` 这一类判据条数**只记该条写作当时的实测总数**（如 466 / 465），不是现在的总数 —— 后续条目会往上加（现为 502）；照原文保留，好让它与当次提交对得上。
 
+### v1.4.1（未发布 · #260 修复）
+
+- **修复：已在 Wallpaper Engine 中隐藏的默认壁纸仍出现在壁纸库并可播放（[#260](https://github.com/elysia395/dsh-wallpaper-engine/issues/260)）**：扫描读取 `projects/defaultprojects/visibility.json`，仅目录名对应值为 `false` 时排除；`true`、未列出项及 myprojects / workshop 不受影响。配置缺失、不可读或损坏时不做过滤；配置文件的 mtime / size 或缺失状态纳入扫描签名，单独修改显隐也会触发重扫。**判据**：`test/verify-wallpaper-scan.mjs` 新增 B260a–f（6 条，含 3 条变异体负对照）。**宿主改动 ⇒ 升级后重启 `dsh web`。**
+
 ### v1.3.3（2026-10-15 · npm 已发布）
 
 - **公告追加一条 + 版本号升级（本仓迭代，用户口径）**：更新公告在四条 callout 之后新增第五条**加粗**提示 —— **「在设置中启用深色模式 + 「作者自用」预设，为本插件最佳效果之一！」**（沿用 16pt callout 样式，`<strong>` 加粗与❗前缀同其余四条）；`package.json` 版本号 `1.3.2` → `1.3.3`，`NOTICE_VERSION` 哨兵同步 `1.3.3`（看过 1.3.2 公告的机器重弹一次）。英文词表同步新增一条（`src/i18n-copy-ext.js`）。**纯客户端改动 ⇒ 刷新页面即可生效。**

@@ -13,6 +13,10 @@
 >
 > Counts such as `test/verify-scene-live.mjs` `(466)` record the **total at the moment that entry was written**, not the current total (later entries push it up — it is 502 now); they are kept verbatim so each entry still matches its own commit.
 
+### v1.4.1 (unreleased · #260 fix)
+
+- **Fix: default wallpapers hidden in Wallpaper Engine still appeared in the library and remained playable ([#260](https://github.com/elysia395/dsh-wallpaper-engine/issues/260))**: scanning now reads `projects/defaultprojects/visibility.json` and excludes a directory only when its value is `false`; `true`, unlisted entries, myprojects and workshop are unaffected. Missing, unreadable or malformed configuration disables filtering. The file's mtime / size or absence is included in the scan signature, so visibility-only edits trigger a rescan. **Checks**: `test/verify-wallpaper-scan.mjs` adds B260a–f (6 checks, including 3 mutant negative controls). **Host-side change ⇒ restart `dsh web` after upgrading.**
+
 ### v1.3.3 (2026-10-15 · published to npm)
 
 - **One more notice line + version bump (this repo's iteration, per the user's wording)**: the update notice gains a fifth **bold** callout after the four existing ones — **"Enable dark mode + the "Author's preset" in Settings — one of this plugin's best looks!"** (same 16pt callout style, `<strong>` bold and the ❗ prefix as the other four); `package.json` `version` `1.3.2` → `1.3.3`, with the `NOTICE_VERSION` sentinel synced to `1.3.3` (machines that saw the 1.3.2 notice get it once more). The English word list gains one entry (`src/i18n-copy-ext.js`). **Client-side change ⇒ just refresh the page.**

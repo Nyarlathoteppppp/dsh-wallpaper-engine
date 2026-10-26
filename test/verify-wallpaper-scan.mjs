@@ -212,6 +212,67 @@ async function installRootsServed (make, env) {
     && afterList.some((p) => p.id === 'mp-new');
 }
 
+/** #260：只有默认壁纸的显式 false 才能隐藏，不能连带过滤用户项目或 workshop。 */
+async function defaultVisibilityRespected (make, env) {
+  const root = join(env.install, 'projects', 'defaultprojects');
+  for (const id of ['sheep', 'techno', 'unlisted', 'zero', 'nil', 'text']) {
+    project(join(root, id), { file: 'scene.pkg' });
+  }
+  project(join(env.install, 'projects', 'myprojects', 'mine'), { file: 'scene.pkg' });
+  project(join(env.contentA, 'workshop'), { file: 'scene.pkg' });
+  writeFileSync(join(root, 'visibility.json'), JSON.stringify({
+    sheep: false, techno: true, zero: 0, nil: null, text: 'false', mine: false, workshop: false,
+  }));
+  const ids = (await make().enumerateWallpapersAsync(env.install, [env.libA])).map((p) => p.id);
+  return !ids.includes('sheep') && ids.length === 7
+    && ['techno', 'unlisted', 'zero', 'nil', 'text', 'mine', 'workshop'].every((id) => ids.includes(id));
+}
+
+/** #260：坏配置只撤销过滤，不该让扫描失败或保留上一次的隐藏状态。 */
+async function invalidVisibilityShowsAll (make, env) {
+  const root = join(env.install, 'projects', 'defaultprojects');
+  const file = join(root, 'visibility.json');
+  project(join(root, 'sheep'), { file: 'scene.pkg' });
+  const kit = make();
+  try {
+    writeFileSync(file, '{"sheep":false}');
+    await kit.enumerateWallpapersAsync(env.install, []);
+    for (const body of ['{ nope', 'null', '[]', '42', '"bad"']) {
+      writeFileSync(file, body);
+      if ((await kit.enumerateWallpapersAsync(env.install, [])).length !== 1) return false;
+    }
+    rmSync(file);
+    if ((await kit.enumerateWallpapersAsync(env.install, [])).length !== 1) return false;
+    mkdirSync(file); // 用目录制造跨平台的 readFile 失败，不依赖权限或运行用户。
+    return (await kit.enumerateWallpapersAsync(env.install, [])).length === 1;
+  } catch { return false; }
+}
+
+/** #260：固定根目录时间，分别只改配置的 mtime / size，防止误测成根目录失效。 */
+async function visibilityChangesSignature (make, env) {
+  const kit = make();
+  const root = join(env.install, 'projects', 'defaultprojects');
+  const file = join(root, 'visibility.json');
+  utimesSync(root, new Date(1e12), new Date(1e12));
+  const st = statSync(root);
+  const signature = () => kit.scanSignatureP(env.install, []);
+  const missing = await signature();
+  writeFileSync(file, '{"sheep":true }');
+  utimesSync(root, st.atime, st.mtime);
+  utimesSync(file, new Date(1e12), new Date(1e12));
+  const created = await signature();
+  writeFileSync(file, '{"sheep":false}'); // 同字节数，只有文件 mtime 变。
+  utimesSync(file, new Date(1e12 + 2000), new Date(1e12 + 2000));
+  const edited = await signature();
+  writeFileSync(file, '{"sheep":false}\n');
+  utimesSync(file, new Date(1e12 + 2000), new Date(1e12 + 2000));
+  const resized = await signature();
+  rmSync(file);
+  utimesSync(root, st.atime, st.mtime);
+  const removed = await signature();
+  return missing !== created && created !== edited && edited !== resized && removed === missing;
+}
+
 // ═══ A. 扫描根与签名（#158）═══════════════════════════════════════════════════
 await (async () => {
   section('A. 扫描根是唯一推导：每个根都进签名（少算一根 ⇒ 那一根的新壁纸永远不进库）');
@@ -335,6 +396,30 @@ await (async () => {
   const env4 = makeEnv('b-dup-neg');
   check('B11 负对照：变异体去掉 id 去重 ⇒ B10 那条判据判红（后者会覆盖前者）',
     await firstWinsOnDuplicateId(() => noDedupe({ WE_APPID: APPID, ...realDeps() }), env4) === false);
+})();
+
+// ═══ B260. 默认壁纸显隐（#260）══════════════════════════════════════════════
+await (async () => {
+  section('B260. visibility.json：默认壁纸过滤、坏配置退化与签名失效');
+  check('B260a defaultVisibilityRespected：仅默认项目的 false 隐藏，true / 未列出 / 非布尔值保留',
+    await defaultVisibilityRespected(makeKit, makeEnv('visibility')));
+  check('B260b invalidVisibilityShowsAll：损坏 / 非对象 / 缺失 / 不可读配置均不隐藏、不抛',
+    await invalidVisibilityShowsAll(makeKit, makeEnv('visibility-invalid')));
+  check('B260c visibilityChangesSignature：仅配置的创建 / mtime / size / 删除也改变签名',
+    await visibilityChangesSignature(makeKit, makeEnv('visibility-signature')));
+
+  const noFilter = await loadMutant('no-visibility-filter', (s) => s.replace(
+    'if (visibility[entry] === false) continue;', 'if (false) continue;'));
+  check('B260d 负对照：禁用过滤 ⇒ B260a 判红',
+    await defaultVisibilityRespected(() => noFilter({ WE_APPID: APPID, ...realDeps() }), makeEnv('visibility-neg')) === false);
+  const badFallback = await loadMutant('visibility-throws', (s) => s.replace(
+    '/* 配置缺失或损坏不应让默认壁纸整族消失（#260）。 */', "throw new Error('mutant');"));
+  check('B260e 负对照：坏配置抛错 ⇒ B260b 判红',
+    await invalidVisibilityShowsAll(() => badFallback({ WE_APPID: APPID, ...realDeps() }), makeEnv('visibility-invalid-neg')) === false);
+  const noVisibilityStamp = await loadMutant('no-visibility-signature', (s) => s.replace(
+    "if (paths.includes(defaultRoot)) paths.push(join(defaultRoot, 'visibility.json'));", ''));
+  check('B260f 负对照：签名忽略配置 ⇒ B260c 判红',
+    await visibilityChangesSignature(() => noVisibilityStamp({ WE_APPID: APPID, ...realDeps() }), makeEnv('visibility-signature-neg')) === false);
 })();
 
 // ═══ C. readProjectP ════════════════════════════════════════════════════════
