@@ -73,7 +73,7 @@ let sig = 'sig-1';
 /** 桩里的目录 mtime 表：**只有这里改过**的条目才该被重探。 */
 const dirMtime = new Map();
 
-function makeBuilder() {
+function makeBuilder(overrides = {}) {
   return createInventoryBuilder({
     log: { info() {}, warn() {}, error() {} },
     BASE: '/wallpaper-engine',
@@ -108,6 +108,7 @@ function makeBuilder() {
     getUploadDir: () => UPLOADS,
     getWeAssetsDir: () => join(ISO, 'we-assets'),
     cacheBaseDir: () => CACHE,
+    ...overrides,
   });
 }
 const buildFresh = () => makeBuilder()();
@@ -220,6 +221,36 @@ check('探测记忆里没有已删除条目的键',
 check('扫描原料也只剩存活的条目',
   !!idx6 && idx6.we.length === 3 && !idx6.we.some((w) => w.id === 'alpha'),
   'we=' + (idx6?.we || []).map((w) => w.id).join(','));
+
+// ── #252: absent media must never mint a token (Steam and directory uploads). ──
+section('#252 空媒体安全退化：仍列出壁纸，不铸造 null token');
+entries = ['video', 'web', 'scene'].map((type) => ({ id: type, type, fileAbs: null, previewAbs: null }));
+sig = 'sig-252-absent';
+const minted = [];
+const strictTokens = (abs) => {
+  if (!abs) throw new Error('tokenFor received absent media');
+  minted.push(abs);
+  return 'tok';
+};
+const absent = await makeBuilder({
+  tokenFor: strictTokens,
+  pathExistsP: async (p) => {
+    if (!p) throw new Error('pathExistsP received absent media');
+    return existsSync(p);
+  },
+  enumerateUploadsP: async () => entries.map((w) => ({ ...w, id: 'up-dir-' + w.id })),
+  metaEntry: () => ({}),
+})();
+check('#252 absent-media-listed-without-tokens', absent.wallpapers.length === 6 && minted.length === 0
+  && absent.wallpapers.every((w) => w.media === null && w.preview === null && w.frameUrl === null
+    && !w.sceneLive && !w.webLive && !w.playable));
+entries = [alpha];
+sig = 'sig-252-preview-before';
+await buildFresh();
+entries = [{ ...alpha, previewAbs: null }];
+sig = 'sig-252-preview-after';
+const droppedPreview = await makeBuilder({ tokenFor: strictTokens })();
+check('#252 dropped-preview-overrides-cached-probe', droppedPreview.wallpapers[0].preview === null);
 
 // ── 收尾 ────────────────────────────────────────────────────────────────────
 rmSync(ISO, { recursive: true, force: true });

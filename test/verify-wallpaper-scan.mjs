@@ -19,7 +19,7 @@
  *   · 夹具在 `.test-cache/wallpaper-scan-guard/` 里现造，不依赖仓库 fixture。
  *   · 覆盖面地板写在 `if` 之外（G 段）。
  */
-import { mkdirSync, writeFileSync, readFileSync, existsSync, statSync, utimesSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, statSync, utimesSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createWallpaperScanKit } from '../lib/wallpaper-scan.js';
@@ -96,7 +96,7 @@ function project (dir, obj, files = {}) {
 function bump (p) { const t = new Date(Date.now() + 2000); utimesSync(p, t, t); }
 
 // ── 变异体加载器（源码文本改写 ⇒ `.test-cache/` 里 import）───────────────────
-// 本模块只 import node: 内置模块（无相对 import）⇒ 变异体可直接落在 tmp 目录里跑。
+// 变异体落 tmp；共享路径 helper 的相对 import 重定向到真源。
 let mutantSeq = 0;
 async function loadMutant (label, transform) {
   const src = readFileSync(SRC, 'utf8');
@@ -105,7 +105,7 @@ async function loadMutant (label, transform) {
   const dir = join(ISO, 'mutants');
   mkdirSync(dir, { recursive: true });
   const file = join(dir, (mutantSeq++) + '-' + label + '.mjs');
-  writeFileSync(file, out);
+  writeFileSync(file, out.replace("from './fs-paths.js'", `from ${JSON.stringify(pathToFileURL(EXTOF_SRC).href)}`));
   return (await import(pathToFileURL(file).href)).createWallpaperScanKit;
 }
 
@@ -210,6 +210,16 @@ async function installRootsServed (make, env) {
   return before !== after
     && afterList.length === beforeCount + 1
     && afterList.some((p) => p.id === 'mp-new');
+}
+
+/** #252: unsafe declarations disappear, not the wallpaper; test both raw and resolved fields. */
+async function mediaPathsDropped(make, env, value) {
+  const kit = make();
+  const dir = project(join(env.contentA, 'escape'), { type: 'video', file: value, preview: value });
+  const raw = await kit.readProjectP(dir);
+  const row = (await kit.enumerateWallpapersAsync(env.install, [env.libA])).find((p) => p.id === 'escape');
+  return raw !== null && raw.file === null && raw.preview === null
+    && row !== undefined && row.fileAbs === null && row.previewAbs === null;
 }
 
 // ═══ A. 扫描根与签名（#158）═══════════════════════════════════════════════════
@@ -335,6 +345,85 @@ await (async () => {
   const env4 = makeEnv('b-dup-neg');
   check('B11 负对照：变异体去掉 id 去重 ⇒ B10 那条判据判红（后者会覆盖前者）',
     await firstWinsOnDuplicateId(() => noDedupe({ WE_APPID: APPID, ...realDeps() }), env4) === false);
+})();
+
+// ═══ B252. project.json 路径包含性 ═════════════════════════════════════════
+await (async () => {
+  section('B252. file / preview containment (#252)');
+  const noFence = await loadMutant('no-media-containment', (s) => s.replace(
+    "import { resolveContainedPathP } from './fs-paths.js';",
+    "const resolveContainedPathP = async (dir, value) => typeof value === 'string' && value ? resolve(dir, value) : null;"));
+  const mutant = () => noFence({ WE_APPID: APPID, ...realDeps() });
+  for (const [name, valueFor] of [
+    ['parent-escape', () => '../outside.mp4'],
+    ['absolute-escape', (env) => join(env.base, 'outside.mp4')],
+    ['missing-parent-escape', () => '../missing.mp4'],
+    ['directory-itself', () => '.'],
+  ]) {
+    for (const [label, make, expected] of [['real', makeKit, true], ['mutant', mutant, false]]) {
+      const env = makeEnv('containment-' + name + '-' + label);
+      writeFileSync(join(env.contentA, 'outside.mp4'), 'secret');
+      writeFileSync(join(env.base, 'outside.mp4'), 'secret');
+      check(`B252 ${name} (${label})`, await mediaPathsDropped(make, env, valueFor(env)) === expected);
+    }
+  }
+  const env = makeEnv('containment-control');
+  const dir = project(join(env.contentA, 'normal'), { type: 'video', file: 'clip.mp4', preview: 'preview.jpg' },
+    { 'clip.mp4': 'video', 'preview.jpg': 'image' });
+  const kit = makeKit();
+  const raw = await kit.readProjectP(dir);
+  const [row] = await kit.enumerateWallpapersAsync(env.install, [env.libA]);
+  check('B252 in-dir-media-kept (negative control)', raw.file === 'clip.mp4' && raw.preview === 'preview.jpg'
+    && row.fileAbs === join(dir, 'clip.mp4') && row.previewAbs === join(dir, 'preview.jpg'));
+  const missing = await kit.readProjectP(project(join(env.base, 'missing-control'),
+    { file: 'missing/deep/clip.mp4', preview: 'missing/deep/preview.jpg' }));
+  check('B252 missing-in-dir-kept (existing ancestor checked)',
+    missing.file === 'missing/deep/clip.mp4' && missing.preview === 'missing/deep/preview.jpg');
+  mkdirSync(join(dir, '..cache'));
+  writeFileSync(join(dir, '..cache', 'x.mp4'), 'video');
+  const dotted = await kit.readProjectP(project(dir, { file: '..cache/x.mp4', preview: '..cache/x.mp4' }));
+  check('B252 dotdot-prefix-in-dir-kept', dotted.file === '..cache/x.mp4' && dotted.preview === '..cache/x.mp4');
+
+  const safeSceneFallbackKept = async (make, sceneEnv) => {
+    const sceneDir = project(join(sceneEnv.contentA, 'safe-fallback'),
+      { file: '../x.json', type: 'scene' }, { 'scene.pkg': 'pkg' });
+    const [sceneRow] = await make().enumerateWallpapersAsync(sceneEnv.install, [sceneEnv.libA]);
+    return sceneRow.file === null && sceneRow.fileAbs === join(sceneDir, 'scene.pkg');
+  };
+  check('B252 unsafe-declaration-safe-scene-fallback', await safeSceneFallbackKept(makeKit, makeEnv('safe-fallback')));
+  const noFallback = await loadMutant('no-null-scene-fallback', (s) => s.replace(
+    "const file = proj.type === 'scene'\n          ? (await resolveSceneMainFileP(dir, proj.file)) || proj.file : proj.file;",
+    "const file = proj.file && (proj.type === 'scene'\n          ? (await resolveSceneMainFileP(dir, proj.file)) || proj.file : proj.file);"));
+  check('B252 unsafe-declaration-safe-scene-fallback (mutant)',
+    await safeSceneFallbackKept(() => noFallback({ WE_APPID: APPID, ...realDeps() }), makeEnv('safe-fallback-mutant')) === false);
+
+  const linkOrSkip = (target, path, type, name) => {
+    try { symlinkSync(target, path, type); return true; }
+    catch (e) {
+      if (!['EPERM', 'EACCES', 'ENOSYS', 'ENOTSUP'].includes(e.code)) throw e;
+      console.log(`  ○ SKIP B252 ${name} — ${e.code} (not passed)`);
+      return false;
+    }
+  };
+  const linked = makeEnv('containment-symlink');
+  const linkDir = project(join(linked.contentA, 'escape'), null);
+  const secret = join(linked.base, 'secret.mp4');
+  writeFileSync(secret, 'secret');
+  if (linkOrSkip(secret, join(linkDir, 'linked.mp4'), 'file', 'symlink-escape (+ mutant)')) {
+    check('B252 symlink-escape', await mediaPathsDropped(makeKit, linked, 'linked.mp4'));
+    check('B252 symlink-escape (mutant)', await mediaPathsDropped(mutant, linked, 'linked.mp4') === false);
+  }
+  const scene = project(join(linked.contentA, 'scene-fallback'), { file: 'scene.json', type: 'scene' });
+  if (linkOrSkip(secret, join(scene, 'scene.pkg'), 'file', 'scene-fallback-symlink')) {
+    const fallback = (await kit.enumerateWallpapersAsync(linked.install, [linked.libA])).find((p) => p.id === 'scene-fallback');
+    check('B252 scene-fallback-symlink', fallback.fileAbs === null);
+  }
+  if (linkOrSkip(linked.base, join(linkDir, 'link'), process.platform === 'win32' ? 'junction' : 'dir',
+    'missing-under-escaping-parent (+ mutant)')) {
+    check('B252 missing-under-escaping-parent', await mediaPathsDropped(makeKit, linked, 'link/missing/deep/no-such.html'));
+    check('B252 missing-under-escaping-parent (mutant)',
+      await mediaPathsDropped(mutant, linked, 'link/missing/deep/no-such.html') === false);
+  }
 })();
 
 // ═══ C. readProjectP ════════════════════════════════════════════════════════

@@ -6,6 +6,7 @@
 > 只保留与版本无关的亮点；带版本号、issue 号、性能数字的内容一律记在这里。
 >
 > **当前发布版本：`v1.3.3`**（npm 与 GitHub Release 已发，2026-10-15）；下一版开发中（`package.json` 的 `version`）。
+> **`### v1.4.1（未发布 · #252 修复）`** 记录壁纸媒体路径包含性修复与回归判据。
 > **`### v1.3.2（未发布）`** 一节收拢的是 **1.3.1 之后**的全部内容；**`### v1.3.0（2026-10-06）`**
 > 一节收拢的是 **1.2.0 之后至 1.3.0** 的全部内容；`### v1.3.0-r2` 与 `### v1.3.1`（都标「未发布」）记的是 **v1.3.0 之后**的增量；**`### v1.2.0`** 一节收拢的是 **1.1.0 之后至 1.2.0**
 > 的全部内容（侧栏工作台：外观 / 播放进侧栏与「壁纸属性」；玻璃染色地板与「左侧栏覆盖」；前置基线切换到官方桌面端 ≥ 0.2.0-rc.1）；
@@ -15,6 +16,11 @@
 > 按**原 README 原文的版本标注**归档；原文未标注小版本的条目放进区间桶，不臆造版本号。
 > 完整逐提交历史见 GitHub Commits / Releases；升级前置条件见 [`UPGRADING.md`](./UPGRADING.md)。
 > `test/verify-scene-live.mjs` 这一类判据条数**只记该条写作当时的实测总数**（如 466 / 465），不是现在的总数 —— 后续条目会往上加（现为 502）；照原文保留，好让它与当次提交对得上。
+
+### v1.4.1（未发布 · #252 修复）
+
+- **壁纸媒体路径越界读取（[#252](https://github.com/elysia395/dsh-wallpaper-engine/issues/252)）**：Steam / 自定义存储扫描对 `project.json` 的 `file`、`preview` 及场景/预览回退候选统一校验目录包含性；现存目标校验真实路径，缺失目标校验最深现存祖先，拒绝 `../`、外部绝对路径及逃逸符号链接（含父目录链接）。越界媒体置空，壁纸仍保留在清单中；不误拒 `..cache/x.mp4`，不阻断安全的场景回退；旧扫描索引失效，避免复用修复前的路径。**宿主改动 ⇒ 升级后重启 `dsh web`。**
+- **判据**：`test/verify-wallpaper-scan.mjs` 的 B252 共设计 **18 条（含 7 条变异负对照）**：`parent-escape`、`absolute-escape`、`missing-parent-escape`、`directory-itself`、`in-dir-media-kept`、`missing-in-dir-kept`、`dotdot-prefix-in-dir-kept`、`unsafe-declaration-safe-scene-fallback`、`symlink-escape`、`scene-fallback-symlink`、`missing-under-escaping-parent`；其中 5 条依赖软链权限，不可用时具名跳过、不计通过。`test/verify-upload-store.mjs` 的 `upload-parent-escape / upload-scene-fallback-kept` **2 条（含 1 条变异负对照）**；`test/verify-inventory-index.mjs` 的 `absent-media-listed-without-tokens`、`dropped-preview-overrides-cached-probe` **2 条（无新增变异体）**。
 
 ### v1.3.3（2026-10-15 · npm 已发布）
 

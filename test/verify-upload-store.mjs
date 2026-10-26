@@ -125,6 +125,7 @@ function loadMutantOf(srcFile, label, transforms) {
   mutants += 1;
   const file = join(ISO, 'mutants', `${mutants}-${label}.mjs`);
   mkdirSync(join(ISO, 'mutants'), { recursive: true });
+  text = text.replace("from './fs-paths.js'", `from ${JSON.stringify(pathToFileURL(join(ROOT, 'lib', 'fs-paths.js')).href)}`);
   writeFileSync(file, text);
   return import(pathToFileURL(file).href);
 }
@@ -618,6 +619,55 @@ section('Ⅰ. `/upload-dir` 真路由（行为面）：① 换目录不崩 ② �
   delete process.env.DSH_WE_DATA_DIR;
   delete process.env.DSH_WE_CACHE_DIR;
   delete process.env.DSH_WE_STEAM_ROOT;
+}
+
+// ───────────────────────── Ⅰ252. 工程目录媒体包含性 ─────────────────────────
+async function uploadMediaContained(factory) {
+  const root = freshDir('project-containment');
+  writeFileSync(join(root, 'secret.mp4'), 'secret');
+  for (const [name, file, preview] of [
+    ['escape', '../secret.mp4', '../secret.mp4'],
+    ['preview-only', 'clip.mp4', '../secret.mp4'],
+    ['normal', 'clip.mp4', 'preview.jpg'],
+    ['scene-fallback', '../x.json', null],
+  ]) {
+    const dir = join(root, name);
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'project.json'), JSON.stringify({ type: name === 'scene-fallback' ? 'scene' : 'video', file, preview }));
+    if (name === 'scene-fallback') writeFileSync(join(dir, 'scene.pkg'), 'pkg');
+    writeFileSync(join(dir, 'clip.mp4'), 'video');
+    writeFileSync(join(dir, 'preview.jpg'), 'image');
+  }
+  const kit = factory({
+    defaultUploadDir: root,
+    pathExistsP: async (p) => existsSync(p),
+    // Raw video paths exercise upload's fence; scenes mimic readProjectP dropping an unsafe declaration.
+    readProjectP: async (dir) => {
+      const proj = JSON.parse(readFileSync(join(dir, 'project.json'), 'utf8'));
+      return proj.type === 'scene' ? { ...proj, file: null } : proj;
+    },
+    resolveSceneMainFileP: async (dir, file) => file || 'scene.pkg',
+  });
+  const rows = await kit.enumerateUploadsP(root);
+  const escape = rows.find((w) => w.id === 'up-dir-escape');
+  const preview = rows.find((w) => w.id === 'up-dir-preview-only');
+  const normal = rows.find((w) => w.id === 'up-dir-normal');
+  const scene = rows.find((w) => w.id === 'up-dir-scene-fallback');
+  return rows.length === 4 && scene?.fileAbs === join(root, 'scene-fallback', 'scene.pkg')
+    && escape?.fileAbs === null && escape?.previewAbs === null
+    && preview?.fileAbs === join(root, 'preview-only', 'clip.mp4') && preview.previewAbs === null
+    && normal?.fileAbs === join(root, 'normal', 'clip.mp4') && normal.previewAbs === join(root, 'normal', 'preview.jpg');
+}
+{
+  const { createUploadDirKit } = await import(pathToFileURL(UPLOAD_DIR_SRC).href);
+  check('Ⅰ252 upload-parent-escape / upload-scene-fallback-kept: drop unsafe media, preserve safe media',
+    await uploadMediaContained(createUploadDirKit));
+  const noFence = await loadMutantOf(UPLOAD_DIR_SRC, 'no-project-containment', [[
+    "import { resolveContainedPathP } from './fs-paths.js';",
+    "import { resolve } from 'node:path';\nconst resolveContainedPathP = async (dir, value) => typeof value === 'string' && value ? resolve(dir, value) : null;",
+  ]]);
+  check('Ⅰ252 upload-parent-escape / upload-scene-fallback-kept (mutant must fail same check)',
+    await uploadMediaContained(noFence.createUploadDirKit) === false);
 }
 
 // ───────────────────────── H. 自检与地板 ─────────────────────────
